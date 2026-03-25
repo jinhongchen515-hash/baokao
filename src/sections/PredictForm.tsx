@@ -33,6 +33,8 @@ export interface UserProfile {
   preferredMajors?: string[];
   budget?: "high" | "medium" | "low";
   notes?: string;
+  id: string; // 唯一标识，每次提交生成新 id
+  createdAt: string;
 }
 
 interface PredictFormProps {
@@ -72,6 +74,7 @@ export default function PredictForm({ onSubmit, isLoading }: PredictFormProps) {
 
   const handleSubmit = () => {
     const profile: UserProfile = {
+      id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
       score: parseInt(score),
       rank: rank ? parseInt(rank) : undefined,
       subject,
@@ -79,6 +82,7 @@ export default function PredictForm({ onSubmit, isLoading }: PredictFormProps) {
       preferredTypes: selectedTypes.length ? selectedTypes : undefined,
       preferredMajors: selectedMajors.length ? selectedMajors : undefined,
       notes: notes || undefined,
+      createdAt: new Date().toLocaleString("zh-CN"),
     };
     onSubmit(profile);
   };
@@ -133,8 +137,18 @@ export default function PredictForm({ onSubmit, isLoading }: PredictFormProps) {
               <CardContent>
                 <Tabs value={subject} onValueChange={v => setSubject(v as "physics" | "history")}>
                   <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="physics" className="cursor-pointer">物理类</TabsTrigger>
-                    <TabsTrigger value="history" className="cursor-pointer">历史类</TabsTrigger>
+                    <TabsTrigger
+                      value="physics"
+                      className="cursor-pointer data-[state=active]:bg-cyan-600 data-[state=active]:text-white data-[state=active]:shadow-md"
+                    >
+                      物理类
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="history"
+                      className="cursor-pointer data-[state=active]:bg-cyan-600 data-[state=active]:text-white data-[state=active]:shadow-md"
+                    >
+                      历史类
+                    </TabsTrigger>
                   </TabsList>
                 </Tabs>
               </CardContent>

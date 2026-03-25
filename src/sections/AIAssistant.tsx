@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Sparkles,
   Send,
@@ -13,6 +14,11 @@ import {
   AlertCircle,
   CheckCircle2,
   Settings,
+  History,
+  Trash2,
+  Clock,
+  ChevronLeft,
+  GraduationCap,
 } from "lucide-react";
 import {
   getAIRecommendation,
@@ -22,9 +28,32 @@ import {
   type UserProfile,
 } from "@/services/ai";
 
-// 预置 API Key（用户可在设置中更换）
 const PRESET_API_KEY = "sk-50dd415ccf084c8aadb7fa36697bb2f9";
 const STORAGE_KEY = "qwen_api_key";
+const HISTORY_KEY = "ai_recommend_history";
+
+// 历史记录条目
+interface HistoryEntry {
+  id: string;
+  profile: UserProfile;
+  messages: AIMessage[];
+  createdAt: string;
+}
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(history: HistoryEntry[]) {
+  // 只保留最近 20 条
+  const trimmed = history.slice(0, 20);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed));
+}
 
 interface AIAssistantProps {
   userProfile: UserProfile | null;
@@ -35,7 +64,6 @@ export default function AIAssistant({ userProfile }: AIAssistantProps) {
     return localStorage.getItem(STORAGE_KEY) || PRESET_API_KEY;
   });
   const [isKeySet, setIsKeySet] = useState(() => {
-    // 如果有预置 key，自动跳过配置步骤
     return !!localStorage.getItem(STORAGE_KEY) || !!PRESET_API_KEY;
   });
   const [isValidating, setIsValidating] = useState(false);
@@ -44,6 +72,55 @@ export default function AIAssistant({ userProfile }: AIAssistantProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>(loadHistory);
+  const [showHistory, setShowHistory] = useState(false);
+  const [currentEntryId, setCurrentEntryId] = useState<string | null>(null);
+
+  // 保存当前会话到历史记录
+  const saveCurrentToHistory = useCallback((profile: UserProfile, msgs: AIMessage[]) => {
+    const entry: HistoryEntry = {
+      id: profile.id,
+      profile,
+      messages: msgs,
+      createdAt: profile.createdAt,
+    };
+    setHistory(prev => {
+      const filtered = prev.filter(h => h.id !== entry.id);
+      const updated = [entry, ...filtered].slice(0, 20);
+      saveHistory(updated);
+      return updated;
+    });
+    setCurrentEntryId(entry.id);
+  }, []);
+
+  // 当 userProfile 变化时（新 id），自动触发 AI 推荐
+  useEffect(() => {
+    if (!userProfile || !apiKey || isLoading) return;
+
+    // 如果是恢复历史记录的 profile，直接加载消息
+    const existing = history.find(h => h.id === userProfile.id);
+    if (existing) {
+      setMessages(existing.messages);
+      setCurrentEntryId(existing.id);
+      return;
+    }
+
+    // 新的 profile，触发 AI 推荐
+    setIsLoading(true);
+    setError(null);
+
+    getAIRecommendation(userProfile, apiKey.trim())
+      .then(result => {
+        setMessages([result]);
+        saveCurrentToHistory(userProfile, [result]);
+      })
+      .catch(err => {
+        setError(err instanceof Error ? err.message : "请求失败，请稍后重试");
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+  }, [userProfile?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 自动滚动到底部
   useEffect(() => {
@@ -67,22 +144,6 @@ export default function AIAssistant({ userProfile }: AIAssistantProps) {
     }
   };
 
-  // 发送首次请求
-  const handleInitialRecommend = async () => {
-    if (!userProfile || !apiKey) return;
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await getAIRecommendation(userProfile, apiKey.trim());
-      setMessages([result]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "请求失败，请稍后重试");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   // 继续对话
   const handleSendMessage = async () => {
     if (!input.trim() || isLoading) return;
@@ -93,19 +154,65 @@ export default function AIAssistant({ userProfile }: AIAssistantProps) {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMsg]);
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
     setInput("");
     setIsLoading(true);
     setError(null);
 
     try {
       const result = await continueAIConversation(messages, input.trim(), apiKey.trim());
-      setMessages(prev => [...prev, result]);
+      const finalMessages = [...newMessages, result];
+      setMessages(finalMessages);
+
+      // 更新历史记录中的消息
+      if (currentEntryId && userProfile) {
+        setHistory(prev => {
+          const updated = prev.map(h =>
+            h.id === currentEntryId ? { ...h, messages: finalMessages } : h
+          );
+          saveHistory(updated);
+          return updated;
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "请求失败，请稍后重试");
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // 加载历史记录
+  const loadHistoryEntry = (entry: HistoryEntry) => {
+    setMessages(entry.messages);
+    setCurrentEntryId(entry.id);
+    setShowHistory(false);
+    // 通知父组件更新 userProfile
+    if (window.setPredictFormData) {
+      window.setPredictFormData(entry.profile);
+    }
+  };
+
+  // 删除历史记录
+  const deleteHistoryEntry = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setHistory(prev => {
+      const updated = prev.filter(h => h.id !== id);
+      saveHistory(updated);
+      return updated;
+    });
+    if (currentEntryId === id) {
+      setMessages([]);
+      setCurrentEntryId(null);
+    }
+  };
+
+  // 清空所有历史
+  const clearAllHistory = () => {
+    setHistory([]);
+    saveHistory([]);
+    setMessages([]);
+    setCurrentEntryId(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -183,6 +290,104 @@ export default function AIAssistant({ userProfile }: AIAssistantProps) {
     );
   }
 
+  // 历史记录侧栏
+  if (showHistory) {
+    return (
+      <Card className="h-full flex flex-col">
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <History className="w-4 h-4 text-primary" />
+              推荐历史
+              {history.length > 0 && (
+                <span className="text-xs text-muted-foreground font-normal">({history.length})</span>
+              )}
+            </CardTitle>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="w-7 h-7 cursor-pointer"
+              onClick={() => setShowHistory(false)}
+              title="返回对话"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="flex-1 flex flex-col min-h-0">
+          {history.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center">
+              <p className="text-sm text-muted-foreground">暂无推荐记录</p>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {history.map(entry => (
+                <button
+                  key={entry.id}
+                  onClick={() => loadHistoryEntry(entry)}
+                  className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer hover:border-primary/30 hover:bg-primary/5 ${
+                    currentEntryId === entry.id
+                      ? "border-primary/50 bg-primary/5"
+                      : "border-border"
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <GraduationCap className="w-3.5 h-3.5 text-primary shrink-0" />
+                        <span>{entry.profile.score}分</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400">
+                          {entry.profile.subject === "physics" ? "物理" : "历史"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-1.5 text-xs text-muted-foreground">
+                        <Clock className="w-3 h-3" />
+                        <span>{entry.createdAt}</span>
+                        <span className="mx-1">·</span>
+                        <span>{entry.messages.length} 条消息</span>
+                      </div>
+                      {entry.profile.preferredProvinces && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {entry.profile.preferredProvinces.slice(0, 4).map(p => (
+                            <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-muted">{p}</span>
+                          ))}
+                          {entry.profile.preferredProvinces.length > 4 && (
+                            <span className="text-[10px] text-muted-foreground">+{entry.profile.preferredProvinces.length - 4}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={(e) => deleteHistoryEntry(entry.id, e)}
+                      className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors shrink-0 ml-2"
+                      title="删除记录"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {history.length > 0 && (
+            <div className="mt-3 pt-3 border-t">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full cursor-pointer text-destructive hover:text-destructive"
+                onClick={clearAllHistory}
+              >
+                <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                清空所有记录
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
   // 已设置 API Key，显示对话界面
   return (
     <Card className="h-full flex flex-col">
@@ -192,55 +397,58 @@ export default function AIAssistant({ userProfile }: AIAssistantProps) {
             <Bot className="w-4 h-4 text-primary" />
             AI 志愿助手（通义千问）
           </CardTitle>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="w-7 h-7 cursor-pointer"
-            onClick={() => {
-              setIsKeySet(false);
-              setMessages([]);
-              localStorage.removeItem(STORAGE_KEY);
-            }}
-            title="更换 API Key"
-          >
-            <Settings className="w-3.5 h-3.5" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="w-7 h-7 cursor-pointer relative"
+              onClick={() => setShowHistory(true)}
+              title="推荐历史"
+            >
+              <History className="w-3.5 h-3.5" />
+              {history.length > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-primary text-[9px] text-primary-foreground flex items-center justify-center font-bold">
+                  {history.length > 9 ? "9+" : history.length}
+                </span>
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="w-7 h-7 cursor-pointer"
+              onClick={() => {
+                setIsKeySet(false);
+                setMessages([]);
+                localStorage.removeItem(STORAGE_KEY);
+              }}
+              title="更换 API Key"
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </Button>
+          </div>
         </div>
       </CardHeader>
 
       <CardContent className="flex-1 flex flex-col min-h-0">
         {/* 消息区域 */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 min-h-[300px] max-h-[500px] pr-1">
-          {!messages.length && userProfile && (
+          {!messages.length && !isLoading && userProfile && (
             <div className="text-center py-8 space-y-3">
               <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
                 <Sparkles className="w-5 h-5 text-primary" />
               </div>
               <p className="text-sm text-muted-foreground">
-                已获取你的填报信息，点击下方按钮获取 AI 推荐
+                正在为你生成 AI 推荐...
               </p>
-              <Button
-                onClick={handleInitialRecommend}
-                disabled={isLoading}
-                size="sm"
-                className="bg-gradient-to-r from-cyan-600 to-teal-500 hover:from-cyan-500 hover:to-teal-400 cursor-pointer"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                    AI 分析中...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                    获取 AI 志愿推荐
-                  </>
-                )}
-              </Button>
+              <div className="flex items-center justify-center gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: "0ms" }} />
+                <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: "150ms" }} />
+                <div className="w-2 h-2 rounded-full bg-primary animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
             </div>
           )}
 
-          {!messages.length && !userProfile && (
+          {!messages.length && !isLoading && !userProfile && (
             <div className="text-center py-8 space-y-3">
               <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
                 <Bot className="w-5 h-5 text-primary" />

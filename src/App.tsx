@@ -16,7 +16,6 @@ import "./App.css";
 
 function App() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [isAILoading, setIsAILoading] = useState(false);
 
   // Intersection Observer 实现滚动渐入动画
   useEffect(() => {
@@ -42,9 +41,6 @@ function App() {
 
   const handleFormSubmit = (profile: UserProfile) => {
     setUserProfile(profile);
-    setIsAILoading(true);
-    // 给 AI 组件一点时间来处理
-    setTimeout(() => setIsAILoading(false), 100);
     // 滚动到 AI 区域（移动端）
     const aiSection = document.querySelector("#ai-predict");
     if (aiSection && window.innerWidth < 1024) {
@@ -89,7 +85,6 @@ function App() {
                   <CardContent>
                     <PredictForm
                       onSubmit={handleFormSubmit}
-                      isLoading={isAILoading}
                     />
                   </CardContent>
                 </Card>
